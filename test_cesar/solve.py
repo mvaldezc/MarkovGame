@@ -8,22 +8,20 @@
 import numpy as np
 from scipy.optimize import linprog
 import pdb
-import animation as anim 
 import concurrent.futures
 import argparse
 import pickle
-
-terminal_reward = 10 # from the perspective of the prey
 
 def get_terminal_reward(x_pos, terminal_reward):
     # x: (Nx,)
     x1 = x_pos[0 : 2]
     x2 = x_pos[2 : 4]
 
-    if all( x1 != x2 ):
-        return terminal_reward
-    else:
-        return - terminal_reward
+    # if all( x1 != x2 ):
+    #     return terminal_reward
+    # else:
+    #     return -terminal_reward
+    return np.linalg.norm( x1 - x2, ord=2 )
 
 def fill_terminal_value_function(V, Nx, N_grid, terminal_reward):
     # Modifies V in-place
@@ -66,31 +64,33 @@ def solve_matrix_game(A, x_pos):
 
     value = u1_prob @ ( A @ u2_prob )
 
-    # pdb.set_trace()
-
     return u1_prob, u2_prob, value
 
-def is_inside_grid(x_pos, N_grid):
+
+
+def is_inside_obstacle(x_pos, G_blocked):
+    # Not sure how fast this is
+    if len(G_blocked) == 0:
+        res = False
+    else:
+        res = np.any(np.all(G_blocked == x_pos, axis=1))
+    return res
+    
+
+def is_inside_grid(x_pos, N_grid, G_blocked):
     # assumes square 2D grid
     cond_1 = ( x_pos[0] >= 0 ) and ( x_pos[1] >= 0 )
     cond_2 = ( x_pos[0] < N_grid ) and ( x_pos[1] < N_grid)
-    if cond_1 and cond_2:
+    cond_3 = not is_inside_obstacle(x_pos, G_blocked)
+
+    if cond_1 and cond_2 and cond_3:
         return True
     else:
         return False
 
-def single_valid(x_pos, u_pos, N_grid):
+def single_valid(x_pos, u_pos, N_grid, G_blocked):
     x_new = x_pos + u_pos
-    return is_inside_grid(x_new, N_grid)
-
-def is_valid_action(x_pos, u1_pos, u2_pos, N_grid):
-    x1_pos = x_pos[ 0 : 2 ]
-    x2_pos = x_pos[ 2 : 4 ]
-
-    c1 = single_valid(x1_pos, u1_pos, N_grid)
-    c2 = single_valid(x2_pos, u2_pos, N_grid)
-
-    return c1 and c2
+    return is_inside_grid(x_new, N_grid, G_blocked)
 
 def get_next_state( x_pos, u1_pos, u2_pos):
     u_pos = np.concatenate( ( u1_pos, u2_pos ) )
@@ -144,7 +144,7 @@ def decode_action( u ):
     ])
     return U[u, :]
 
-def process_item( x, Nu, N_grid, V ):
+def process_item( x, Nu, N_grid, V, G_blocked ):
     A = [ ]
     u1_values = [ ]
     u2_values = [ ]
@@ -152,13 +152,12 @@ def process_item( x, Nu, N_grid, V ):
     # print("x: " + str(x))
     for u1 in range(Nu): # for player 1
         u1_pos = decode_action( u1 )
-        if single_valid(x_pos[0:2], u1_pos, N_grid):
+        if single_valid(x_pos[0:2], u1_pos, N_grid, G_blocked):
             u1_values.append(u1)
             curr_col = [ ]
             for u2 in range(Nu): # for player 2
                 u2_pos = decode_action( u2 )
-                if single_valid(x_pos[2:4], u2_pos, N_grid):
-
+                if single_valid(x_pos[2:4], u2_pos, N_grid, G_blocked):
                     y_pos = get_next_state( x_pos, u1_pos, u2_pos )
                     y = encode_state( y_pos, N_grid )
                     curr_val = get_instant_reward( x_pos, u1_pos, u2_pos ) + V[y]
@@ -181,25 +180,27 @@ def process_item( x, Nu, N_grid, V ):
     u1_prob_full[u1_values] = u1_prob
     u2_prob_full[u2_values] = u2_prob
 
+
     return (r, u1_prob_full, u2_prob_full)
 
     # VV[x] = r
     # U_opt_p1[x, :] = u1_prob_full
     # U_opt_p2[x, :] = u2_prob_full    
 
-def ones_step_bdp_parallel(Nx, Nu, V, N_grid, n_cores):
+def ones_step_bdp_parallel(Nx, Nu, V, N_grid, n_cores, G_blocked):
     VV = np.zeros( Nx )
     # Uopt = np.zeros((Nx, Nu, Nu), dtype=np.int32)
-    U_opt_p1 = np.zeros( ( Nx, Nu ), dtype=np.int32 )
-    U_opt_p2 = np.zeros( ( Nx, Nu ), dtype=np.int32 )
+    U_opt_p1 = np.zeros( ( Nx, Nu ), dtype=float )
+    U_opt_p2 = np.zeros( ( Nx, Nu ), dtype=float )
 
     x_list = list(range(Nx))
     Nu_list = [Nu] * len(x_list)
     N_grid_list = [N_grid] * len(x_list)
     V_list = [V] * len(x_list)
+    G_blocked_list = [G_blocked] * len(x_list)
 
     with concurrent.futures.ProcessPoolExecutor(n_cores) as  executor:
-        results = list( executor.map( process_item, x_list, Nu_list, N_grid_list, V_list))
+        results = list( executor.map( process_item, x_list, Nu_list, N_grid_list, V_list, G_blocked_list))
 
     # Update the shared array using the results
     for x, value in enumerate(results):
@@ -215,12 +216,12 @@ def ones_step_bdp_parallel(Nx, Nu, V, N_grid, n_cores):
 
     
 
-def one_step_bdp(Nx, Nu, V, N_grid):
+def one_step_bdp(Nx, Nu, V, N_grid, G_blocked):
     # V is the previous
     VV = np.zeros( Nx )
     # Uopt = np.zeros((Nx, Nu, Nu), dtype=np.int32)
-    U_opt_p1 = np.zeros( ( Nx, Nu ), dtype=np.int32 )
-    U_opt_p2 = np.zeros( ( Nx, Nu ), dtype=np.int32 )
+    U_opt_p1 = np.zeros( ( Nx, Nu ), dtype=float )
+    U_opt_p2 = np.zeros( ( Nx, Nu ), dtype=float )
     # A = np.zeros((Nu, Nu)) # for the matrix game
     # A_u_idx = [ ]
     for x in range(Nx):
@@ -231,12 +232,12 @@ def one_step_bdp(Nx, Nu, V, N_grid):
         # print("x: " + str(x))
         for u1 in range(Nu): # for player 1
             u1_pos = decode_action( u1 )
-            if single_valid(x_pos[0:2], u1_pos, N_grid):
+            if single_valid(x_pos[0:2], u1_pos, N_grid, G_blocked):
                 u1_values.append(u1)
                 curr_col = [ ]
                 for u2 in range(Nu): # for player 2
                     u2_pos = decode_action( u2 )
-                    if single_valid(x_pos[2:4], u2_pos, N_grid):
+                    if single_valid(x_pos[2:4], u2_pos, N_grid, G_blocked):
                         y_pos = get_next_state( x_pos, u1_pos, u2_pos )
                         y = encode_state( y_pos, N_grid )
                         curr_val = get_instant_reward( x_pos, u1_pos, u2_pos ) + V[y]
@@ -260,12 +261,18 @@ def one_step_bdp(Nx, Nu, V, N_grid):
         u2_prob_full[u2_values] = u2_prob
 
         VV[x] = r
+
         U_opt_p1[x, :] = u1_prob_full
         U_opt_p2[x, :] = u2_prob_full
 
-        if all(x_pos == np.array([0, 0, 2, 2])):
-            print(u1_prob_full)
-            print(u2_prob_full)
+        # if x == 49:
+        #     pdb.set_trace()
+
+        # if all(x_pos == np.array([0, 1, 0, 0])):
+        #     print("x: ", x)
+        #     print("u1_prob_full:\n", u1_prob_full)
+        #     print("u2_prob_full:\n", u2_prob_full)
+        #     print("U_opt_p2[49, :]: \n", U_opt_p2[49, :])
     
     return VV, U_opt_p1, U_opt_p2
 
@@ -277,7 +284,7 @@ def run_game(U_t_p1, U_t_p2, x0_pos, N_grid, T):
     for ii in range(0, T):
         print("Stage: ", ii)
         x = int( encode_state(x_path[ii, :], N_grid) )
-        print(x_path[ii, :])
+        # print(x_path[ii, :])
         # print('x_ini: ', x_path[ii, :])
         # print(x)
         u1_prob = U_t_p1[ii, x, :]
@@ -290,11 +297,33 @@ def run_game(U_t_p1, U_t_p2, x0_pos, N_grid, T):
         # print('u_pos', u_pos)
         # print('x_pat', x_path[ii, :])
         x_path[ii+1, :] = x_path[ii, :] + u_pos
+        print("u1_prob:\n", u1_prob)
+        print("u2_prob:\n", u2_prob)
 
         # if ii == 4:
         #     pdb.set_trace()
 
     return x_path
+
+def generate_obstacles(N_grid, m):
+    if N_grid <= 2:
+        raise ValueError("N_grid should be greater than 2")
+
+    # Ensure m is not greater than the number of possible distinct rows
+    if m > ((N_grid - 2)**2):
+        raise ValueError("m should not be greater than N_grid - 2")
+
+    # Generate all possible combinations for the first two columns
+    possible_values = np.arange(1, N_grid - 1)
+    combinations = np.array(np.meshgrid(possible_values, possible_values)).T.reshape(-1, 2)
+
+    # Shuffle the combinations to make them random
+    np.random.shuffle(combinations)
+
+    # Select the first m rows
+    result_array = combinations[:m, :]
+
+    return result_array
 
 # Main Function
 if __name__ == "__main__":
@@ -321,17 +350,30 @@ if __name__ == "__main__":
     V = -np.ones( ( T + 1, Nx )) # space for value functions
     fill_terminal_value_function(V, Nx, N_grid, terminal_reward)
 
-    U_t_p1 = -np.ones( ( T, Nx, Nu ), dtype=np.int32 ) # space for optimal actions
-    U_t_p2 = -np.ones( ( T, Nx, Nu ), dtype=np.int32 ) # space for optimal actions
+    U_t_p1 = -np.ones( ( T, Nx, Nu ), dtype=float ) # space for optimal actions
+    U_t_p2 = -np.ones( ( T, Nx, Nu ), dtype=float ) # space for optimal actions
 
+
+    # G_blocked = np.array([
+    #     [1, 0],
+    #     [1, 1],
+    #     [1, 2],
+    # ])
+    m = 15
+    # G_blocked = generate_obstacles(N_grid, m)
+    G_blocked = [ ]
+
+    # G_blocked = []
 
     for t in range( T, 0, -1 ):
-        print("Time: " + str( t ) )
-        vv, u_opt_p1, u_opt_p2 = one_step_bdp(Nx, Nu, V[t, :], N_grid)
-        # vv, u_opt_p1, u_opt_p2 = ones_step_bdp_parallel(Nx, Nu, V[t, :], N_grid, N_cores)
+        print("Time: " + str( t ), "N_cores: ", N_cores, "terminal_reward: ", terminal_reward )
+        # vv, u_opt_p1, u_opt_p2 = one_step_bdp(Nx, Nu, V[t, :], N_grid, G_blocked)
+        vv, u_opt_p1, u_opt_p2 = ones_step_bdp_parallel(Nx, Nu, V[t, :], N_grid, N_cores, G_blocked)
         V[t-1, :] = vv
         U_t_p1[t-1, :, :] = u_opt_p1
         U_t_p2[t-1, :, :] = u_opt_p2
+        # print("U_t_p2[t-1, 49, :] \n")
+        # print(U_t_p2[t-1, 49, :])
         # V[T-1, :], Uopt[t-1, :] = one_step_bdp(Nx, Nu, V[t, :])
 
 
@@ -342,13 +384,14 @@ if __name__ == "__main__":
     # anim.createAnimation(positions, Map)
 
     # store
-    fn = f"T={T}--N_grid={N_grid}.pkl"
+    fn = f"T={T}--N_grid={N_grid}--terminal_reward={int(terminal_reward)}.pkl"
     data_store = {
         "U_t_p1": U_t_p1,
         "U_t_p2": U_t_p2,
         "N_grid": N_grid,
         "T": T,
         "terminal_reward": terminal_reward,
+        "G_blocked": G_blocked,
     }
     with open(fn, 'wb') as f:
         pickle.dump(data_store, f)
