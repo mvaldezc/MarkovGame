@@ -7,6 +7,8 @@
 
 import numpy as np
 from scipy.optimize import linprog
+import pdb
+
 
 TERMINAL_REWARD = 100 # from the perspective of the prey
 
@@ -26,18 +28,22 @@ def fill_terminal_value_function(V, Nx, N_grid):
         x_pos = decode_state(ii, N_grid)
         V[-1, ii] = get_terminal_reward(x_pos)
 
-def solve_matrix_game(A, x_pos, Nu):
-    # we solve for player 2 first
-    c = np.concatenate( ( np.zeros( Nu ), [1.0] ) )
-    A_ub = np.c_[ A, -np.ones( A.shape[0] ) ]
-    b_ub = np.zeros( A.shape[1] )
+def solve_matrix_game(A, x_pos):
 
-    A_eq = np.concatenate( ( np.ones( Nu ), [0.0] ) )
+    Ny = A.shape[1]
+    Nx = A.shape[0]
+
+    # we solve for player 2 first
+    c = np.concatenate( ( np.zeros( Ny ), [1.0] ) )
+    A_ub = np.c_[ A, -np.ones( Nx ) ]
+    b_ub = np.zeros( Nx )
+
+    A_eq = np.concatenate( ( np.ones( Ny ), [0.0] ) )
     A_eq = A_eq[np.newaxis, :] # format required by LP
     b_eq = np.array( [1.0] )
 
-    l_b = np.concatenate( ( np.zeros( Nu ), [ -np.inf ] ) )
-    u_b = np.concatenate( ( np.ones( Nu ), [ np.inf ] ) )
+    l_b = np.concatenate( ( np.zeros( Ny ), [ -np.inf ] ) )
+    u_b = np.concatenate( ( np.ones( Ny ), [ np.inf ] ) )
     bounds = np.column_stack( ( l_b, u_b ) )
 
     # solve the linear program for player 2
@@ -47,15 +53,17 @@ def solve_matrix_game(A, x_pos, Nu):
 
     # now we solve a simpler linear program for player 1
     l = - A @ u2_prob # minus so we min instead of max
-    l_b = np.zeros( Nu )
-    u_b = np.ones( Nu )
-    A_eq = np.ones( ( 1, Nu ) )
+    l_b = np.zeros( Nx )
+    u_b = np.ones( Nx )
+    A_eq = np.ones( ( 1, Nx ) )
     b_eq = np.array( [ 1.0 ] )
     bounds = np.column_stack( ( l_b, u_b) )
     res_2 = linprog(c=l, bounds=bounds, A_eq=A_eq, b_eq=b_eq)
     u1_prob = res_2.x
 
     value = u1_prob @ ( A @ u2_prob )
+
+    # pdb.set_trace()
 
     return u1_prob, u2_prob, value
 
@@ -68,11 +76,11 @@ def is_inside_grid(x_pos, N_grid):
     else:
         return False
 
+def single_valid(x_pos, u_pos, N_grid):
+    x_new = x_pos + u_pos
+    return is_inside_grid(x_new, N_grid)
+
 def is_valid_action(x_pos, u1_pos, u2_pos, N_grid):
-    def single_valid(x_pos, u_pos, N_grid):
-        x_new = x_pos + u_pos
-        return is_inside_grid(x_new, N_grid)
-            
     x1_pos = x_pos[ 0 : 2 ]
     x2_pos = x_pos[ 2 : 4 ]
 
@@ -139,26 +147,60 @@ def one_step_bdp(Nx, Nu, V, N_grid):
     # Uopt = np.zeros((Nx, Nu, Nu), dtype=np.int32)
     U_opt_p1 = np.zeros( ( Nx, Nu ), dtype=np.int32 )
     U_opt_p2 = np.zeros( ( Nx, Nu ), dtype=np.int32 )
-    A = np.zeros((Nu, Nu)) # for the matrix game
-
+    # A = np.zeros((Nu, Nu)) # for the matrix game
+    # A_u_idx = [ ]
     for x in range(Nx):
+        A = [ ]
+        u1_values = [ ]
+        u2_values = [ ]
         x_pos = decode_state(x, N_grid)
+        print("x: " + str(x))
         for u1 in range(Nu): # for player 1
-            for u2 in range(Nu): # for player 2
-                u1_pos = decode_action( u1 )
-                u2_pos = decode_action( u2 )
-                if is_valid_action(x_pos, u1_pos, u2_pos, N_grid):
-                    y_pos = get_next_state( x_pos, u1_pos, u2_pos )
-                    y = encode_state( y_pos, N_grid )
-                    A[u1, u2] = get_instant_reward( x_pos, u1_pos, u2_pos ) + V[y]
+            u1_pos = decode_action( u1 )
+            if single_valid(x_pos[0:2], u1_pos, N_grid):
+                u1_values.append(u1)
+                curr_col = [ ]
+                for u2 in range(Nu): # for player 2
+                    u2_pos = decode_action( u2 )
+                    if single_valid(x_pos[2:4], u2_pos, N_grid):
+                        y_pos = get_next_state( x_pos, u1_pos, u2_pos )
+                        y = encode_state( y_pos, N_grid )
+                        curr_val = get_instant_reward( x_pos, u1_pos, u2_pos ) + V[y]
+                        curr_col.append(curr_val)
+
+                        if not (u2 in u2_values):
+                            u2_values.append(u2)
+
+                if len( curr_col ) != 0:
+                    A.append( curr_col )
         
         # solve the matrix game
         # u_eq is a tuple, r from the perspective of P1(prey)
-        u1_prob, u2_prob, r = solve_matrix_game( A, x_pos, Nu)
+        # A =  np.transpose( np.array(A) )
+        A = np.array(A) # Check this, I was sure I required a transpose
+        print("before solve matrix")
+        u1_prob, u2_prob, r = solve_matrix_game( A, x_pos )
+    
+        
+
+        # Extend probability vector so that it has 9 valus
+        u1_prob_full = np.zeros(9)
+        u2_prob_full = np.zeros(9)
+        # print("u1_values")
+        # print(u1_values)
+        # print("u2_values")
+        # print(u2_values)
+
+        # pdb.set_trace()
+
+        u1_prob_full[u1_values] = u1_prob
+        u2_prob_full[u2_values] = u2_prob
+        # print("here")
+
 
         VV[x] = r
-        U_opt_p1[x, :] = u1_prob
-        U_opt_p2[x, :] = u2_prob
+        U_opt_p1[x, :] = u1_prob_full
+        U_opt_p2[x, :] = u2_prob_full
     
     return VV, U_opt_p1, U_opt_p2
 
