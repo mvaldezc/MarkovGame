@@ -5,4 +5,5 @@ venve/*
 .venv/
 .venv/*
 .venv
-
+*.pkl
+*.pyc
