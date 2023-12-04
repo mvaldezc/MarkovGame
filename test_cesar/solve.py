@@ -12,6 +12,8 @@ import concurrent.futures
 import argparse
 import pickle
 
+BETA = 0.9 # DISCOUNTING FACTOR
+
 def get_terminal_reward(x_pos, terminal_reward):
     # x: (Nx,)
     x1 = x_pos[0 : 2]
@@ -160,7 +162,7 @@ def process_item( x, Nu, N_grid, V, G_blocked ):
                 if single_valid(x_pos[2:4], u2_pos, N_grid, G_blocked):
                     y_pos = get_next_state( x_pos, u1_pos, u2_pos )
                     y = encode_state( y_pos, N_grid )
-                    curr_val = get_instant_reward( x_pos, u1_pos, u2_pos ) + V[y]
+                    curr_val = get_instant_reward( x_pos, u1_pos, u2_pos ) + BETA * V[y]
                     curr_col.append(curr_val)
 
                     if not (u2 in u2_values):
@@ -240,7 +242,7 @@ def one_step_bdp(Nx, Nu, V, N_grid, G_blocked):
                     if single_valid(x_pos[2:4], u2_pos, N_grid, G_blocked):
                         y_pos = get_next_state( x_pos, u1_pos, u2_pos )
                         y = encode_state( y_pos, N_grid )
-                        curr_val = get_instant_reward( x_pos, u1_pos, u2_pos ) + V[y]
+                        curr_val = get_instant_reward( x_pos, u1_pos, u2_pos ) + BEAT*V[y]
                         curr_col.append(curr_val)
 
                         if not (u2 in u2_values):
@@ -359,9 +361,9 @@ if __name__ == "__main__":
     #     [1, 1],
     #     [1, 2],
     # ])
-    m = 15
-    # G_blocked = generate_obstacles(N_grid, m)
-    G_blocked = [ ]
+    m = 5
+    G_blocked = generate_obstacles(N_grid, m)
+    # G_blocked = [ ]
 
     # G_blocked = []
 
